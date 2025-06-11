@@ -2,7 +2,6 @@ import pygame
 import socket
 import threading
 import math
-import bullet
 
 # Initialize pygame
 pygame.init()
