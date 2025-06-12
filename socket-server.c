@@ -9,11 +9,11 @@
 #include <time.h>
 #include <math.h>
 
-#define MAX_PLAYERS 2
+#define MAX_PLAYERS 4
 #define MAX_BOXES 100
 #define MAX_BULLETS 500
-#define WIDTH 1920
-#define HEIGHT 1080
+#define WIDTH 3000
+#define HEIGHT 3000
 
 typedef struct {
     int id;
@@ -26,6 +26,7 @@ typedef struct {
 	int size;
 	int damage;
     time_t last_shot_time;
+	int active;
 } Player;
 
 typedef struct {
@@ -44,11 +45,17 @@ typedef struct {
     int size;
 } Box;
 
+typedef struct{
+    int x,y;
+    int size;
+    int player_id;
+} Sword;
+
 Player players[MAX_PLAYERS];
 Box boxes[MAX_BOXES];
 Bullet bullets[MAX_BULLETS];
 int num_players = 0;
-int num_boxes = 10;
+int num_boxes = 90;
 int num_bullets = 0;
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -77,6 +84,7 @@ void initialize_game() {
 		players[i].size = 15;
 		players[i].damage = 5;
         players[i].last_shot_time = 0;
+		players[i].active = 0;
     }
 }
 
@@ -115,9 +123,12 @@ void level_up(Player* player){
 	player->max_hp+=10;
 }
 
-void heal(){
+void update_player(){
 	for(int i=0;i<num_players;i++){
-		if(players[i].hp<players[i].max_hp){
+		if(players[i].hp<=0){
+			players[i].active = 0;
+		}
+		else if(players[i].hp<players[i].max_hp){
 			players[i].hp+=0.01;
 		}
 	}
@@ -145,6 +156,9 @@ void update_bullets() {
 			if(dist < players[j].size + players[j].level * 3 && bullets[i].player_id != players[j].id){
 				players[j].hp -= players[bullets[i].player_id].damage;
 				bullets[i].active = 0;
+                if(players[j].hp<=0){
+                    level_up(&players[bullets[i].player_id]);
+                }
 			}
 		}
         
@@ -173,10 +187,15 @@ void *client_handler(void *socket_desc) {
     int player_id = -1;
     
     pthread_mutex_lock(&mutex);
-    if (num_players < MAX_PLAYERS) {
-        player_id = num_players++;
-    }
-    pthread_mutex_unlock(&mutex);
+	for (int i = 0; i < MAX_PLAYERS; i++) {
+		if (!players[i].active) {
+			player_id = i;
+			players[i].active = 1;
+			num_players++;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&mutex);
     
     if (player_id == -1) {
         close(sock);
@@ -188,16 +207,16 @@ void *client_handler(void *socket_desc) {
     send(sock, id_msg, strlen(id_msg), 0);
     
     char buffer[1024];
-    while (1) {
+    while (1 && players[player_id].active) {
         int n = recv(sock, buffer, sizeof(buffer), 0);
         if (n <= 0) break;
         buffer[n] = '\0';
         
-        int right = 0, left = 0, up = 0, down = 0, shoot = 0;
+        int right = 0, left = 0, up = 0, down = 0, shoot = 0, slash=0;
         float mouse_x = 0, mouse_y = 0;
         
-        sscanf(buffer, "%d,%d,%d,%d,%d,%f,%f", 
-               &right, &left, &up, &down, &shoot, &mouse_x, &mouse_y);
+        sscanf(buffer, "%d,%d,%d,%d,%d,%d,%f,%f", 
+               &right, &left, &up, &down, &shoot, &slash, &mouse_x, &mouse_y);
         
         pthread_mutex_lock(&mutex);
         
@@ -220,9 +239,13 @@ void *client_handler(void *socket_desc) {
 				float dx = mouse_x - players[player_id].x;
                 float dy = mouse_y - players[player_id].y;
                 float distance = sqrt(dx*dx + dy*dy);
-				double sin=(mouse_y-players[player_id].y)/distance;
-                b.x = players[player_id].x+(players[player_id].size+(players[player_id].level*3))*sin;
-                b.y = players[player_id].y+(players[player_id].size+(players[player_id].level*3))*sin;
+				float offset = players[player_id].size + players[player_id].level * 3 + 2;
+
+				float direction_x = dx / distance;
+				float direction_y = dy / distance;
+
+				b.x = players[player_id].x + offset * direction_x;
+				b.y = players[player_id].y + offset * direction_y;
                 b.endx = mouse_x;
                 b.endy = mouse_y;
                 b.player_id = player_id;
@@ -241,20 +264,58 @@ void *client_handler(void *socket_desc) {
                 players[player_id].last_shot_time = now;
             }
         }
+
+        if (slash) {
+            for (int j = 0; j < MAX_PLAYERS; j++) {
+                if (j == player_id || !players[j].active) continue;
+
+                float dx = players[j].x - players[player_id].x;
+                float dy = players[j].y - players[player_id].y;
+                float dist = sqrt(dx * dx + dy * dy);
+
+                float sword_range = 40 + players[player_id].level * 3;
+
+                if (dist <= sword_range) {
+                    players[j].hp -= players[player_id].damage;
+
+                    if (players[j].hp <= 0) {
+                        level_up(&players[player_id]);
+                    }
+                }
+            }
+
+            // Możesz dodać też zadawanie obrażeń boxom:
+            for (int j = 0; j < num_boxes; j++) {
+                if (boxes[j].hp <= 0) continue;
+
+                float dx = boxes[j].x - players[player_id].x;
+                float dy = boxes[j].y - players[player_id].y;
+                float dist = sqrt(dx * dx + dy * dy);
+
+                float sword_range = 40 + players[player_id].level * 3;
+
+                if (dist <= sword_range) {
+                    boxes[j].hp -= players[player_id].damage;
+                    if (boxes[j].hp <= 0) {
+                        level_up(&players[player_id]);
+                    }
+                }
+            }
+        }
         
         update_bullets();
 		remove_inactive_bullets();
 		update_boxes();
-		heal();
+		update_player();
         
         char response[4096] = {0};
         char temp[256];
         
         for (int i = 0; i < MAX_PLAYERS; i++) {
-		snprintf(temp, sizeof(temp), "%d,%.1f,%.1f,%d,%d,%d,%d,%.1f,%d,%.1f;", 
+		snprintf(temp, sizeof(temp), "%d,%.1f,%.1f,%d,%d,%d,%d,%.1f,%d,%.1f,%d;", 
 				players[i].id, players[i].x, players[i].y, players[i].level,
 				players[i].color[0], players[i].color[1], players[i].color[2], 
-				players[i].hp, players[i].size, players[i].max_hp);
+				players[i].hp, players[i].size, players[i].max_hp,players[i].active);
 		strcat(response, temp);
 }
         strcat(response, "|");
@@ -284,8 +345,8 @@ void *client_handler(void *socket_desc) {
     }
     
     pthread_mutex_lock(&mutex);
-    num_players--;
-    pthread_mutex_unlock(&mutex);
+	players[player_id].active = 0;
+	pthread_mutex_unlock(&mutex);
     
     close(sock);
     return NULL;
