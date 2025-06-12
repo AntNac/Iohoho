@@ -103,7 +103,6 @@ void remove_inactive_bullets() {
 }
 
 void update_boxes() {
-    int j = 0;
     for (int i = 0; i < num_boxes; i++) {
         if (boxes[i].hp<=0) {
             boxes[i].x = rand() % WIDTH;
